@@ -4,6 +4,7 @@ jspm_packages/
 
 # Compilação
 dist/
+resources/*.bin
 lib-cov/
 *.seed
 *.log
