@@ -21,13 +21,19 @@ This project is a submission for the "Rinha de Backend 2026" challenge. The goal
 # Implementation Status
 
 ### ✅ Phase 1: Data Architecture & Pre-processing
-- **Quantization:** Dataset converted from Float32 to **Int16** to fit in RAM.
-    - Range `[0.0, 1.0]` mapped to `[0, 32767]`.
-    - Sentinel `-1` mapped to `-32768`.
-- **Streaming Pre-processor:** Script `preprocess.ts` implemented with `zlib` and backpressure management to handle 3M records without OOM during build.
-- **Binary Format:**
-    - `vectors.bin`: ~81MB (14 dimensions * Int16).
-    - `labels.bin`: ~367KB (Bit-packed fraud/legit status).
+- **Quantization & VP-Tree**:
+    - Dataset convertido para **Int16** (84MB) e indexado em uma **VP-Tree** (3MB) durante o build.
+    - **Leaf Clustering**: Agrupamento de vetores em nós folha (tamanho 64) para busca linear rápida e otimização de cache da CPU.
+    - **Physical Reordering**: Vetores e Labels reordenados fisicamente no disco para seguir a ordem da árvore, maximizando a localidade de cache durante o acesso.
+- **Binary Format**:
+    - `vectors.bin`: Vetores Int16 (alinhados).
+    - `labels.bin`: Bit-packed labels.
+    - `tree.bin`: Nós de 24 bytes (Vantage Point, Threshold Float64, Ponteiros).
+
+### 🛠️ Memory Management Strategy
+- **Zero-Copy Loading**: As APIs carregam os binários via `mmap` ou `fs.readSync` em `TypedArrays` compartilhados, minimizando o footprint de RAM.
+- **Memory Sharing**: Para operar dentro dos 350MB totais, utilizamos **memória compartilhada via kernel/SO** (page cache), onde múltiplas instâncias Node.js mapeiam o mesmo arquivo físico na RAM, evitando duplicação.
+- **Pre-allocation**: Buffer de memória pré-alocado para evitar Garbage Collection (GC) durante o ciclo de vida da requisição (p99 ≤ 1ms).
 
 ### ✅ Phase 2.1: Initialization & Vectorization
 - **Efficient Loading:** `DataLoader` uses `fs.readSync` for zero-copy memory mapping into `TypedArrays`.

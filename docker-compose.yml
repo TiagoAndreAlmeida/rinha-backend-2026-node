@@ -1,0 +1,29 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "30MB"
+    depends_on:
+      - api1
+      - api2
+
+  api1: &api-base
+    build: .
+    shm_size: '256mb'
+    ipc: shareable
+    deploy:
+      resources:
+        limits:
+          cpus: "0.4"
+          memory: "160MB"
+
+  api2:
+    <<: *api-base
+    ipc: service:api1
