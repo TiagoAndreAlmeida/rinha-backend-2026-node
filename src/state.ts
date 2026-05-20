@@ -6,6 +6,8 @@ export const state = {
     isReady: false,
     vectors: null as Int16Array | null,
     labels: null as Uint8Array | null,
+    treeInt32: null as Int32Array | null,
+    treeFloat64: null as Float64Array | null,
     totalRecords: 3000000,
     dimensions: 14,
     

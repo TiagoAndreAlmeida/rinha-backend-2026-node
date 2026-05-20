@@ -117,7 +117,8 @@ async function preprocess() {
 
         const mid = subStart + Math.floor(subSize / 2);
         quickselect(indices, subStart, end - 1, mid, currentDistances);
-        const threshold = currentDistances[indices[mid]];
+        const thresholdSq = currentDistances[indices[mid]];
+        const threshold = Math.sqrt(thresholdSq);
 
         const left = build(subStart, mid);
         const right = build(mid, end);

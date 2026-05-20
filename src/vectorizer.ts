@@ -1,87 +1,80 @@
 import { state } from './state.js';
 
-/**
- * Valor sentinela para dados faltantes (last_transaction: null).
- * Deve ser idêntico ao usado no preprocess.ts.
- */
 const SENTINEL = -32768;
+const QUERY_VECTOR = new Int16Array(14); // Reutilizável
 
-/**
- * Função utilitária para clamp e quantização Int16.
- */
 function quantize(value: number): number {
+    if (isNaN(value)) return 0;
     const clamped = Math.max(0, Math.min(1, value));
     return Math.round(clamped * 32767);
 }
 
 /**
- * Transforma o payload da transação em um Int16Array de 14 dimensões.
- * Otimizado para latência mínima.
+ * Cálculo rápido do dia da semana (Seg=0, Dom=6) sem usar new Date().
+ */
+function getDayOfWeek(y: number, m: number, d: number): number {
+    const t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    if (m < 3) y -= 1;
+    const day = (y + Math.floor(y/4) - Math.floor(y/100) + Math.floor(y/400) + t[m-1]! + d) % 7;
+    return (day + 6) % 7; 
+}
+
+/**
+ * Transforma o payload em um Int16Array de 14 dimensões SEM ALOCAÇÃO.
  */
 export function vectorize(payload: any): Int16Array {
-    const vector = new Int16Array(14);
-    const { transaction, customer, merchant, terminal, last_transaction } = payload;
+    const transaction = payload.transaction || {};
+    const customer = payload.customer || { known_merchants: [] };
+    const merchant = payload.merchant || {};
+    const terminal = payload.terminal || {};
+    const last_transaction = payload.last_transaction;
     const config = state.config;
 
-    // Dim 0: amount
-    vector[0] = quantize(transaction.amount / config.max_amount);
+    QUERY_VECTOR[0] = quantize(Number(transaction.amount) / config.max_amount);
+    QUERY_VECTOR[1] = quantize(Number(transaction.installments) / config.max_installments);
 
-    // Dim 1: installments
-    vector[1] = quantize(transaction.installments / config.max_installments);
+    const amount = Number(transaction.amount) || 0;
+    const custAvg = Number(customer.avg_amount) || 0;
+    const ratio = custAvg > 0 ? (amount / custAvg) : config.amount_vs_avg_ratio;
+    QUERY_VECTOR[2] = quantize(ratio / config.amount_vs_avg_ratio);
 
-    // Dim 2: amount_vs_avg
-    vector[2] = quantize((transaction.amount / customer.avg_amount) / config.amount_vs_avg_ratio);
-
-    // Tratamento de Data (ISO: 2026-03-11T20:23:35Z)
-    const reqAt = transaction.requested_at;
-    const hour = parseInt(reqAt.substring(11, 13), 10);
+    // Parsing manual rápido da data: "2026-03-11T20:23:35Z"
+    const reqAt = String(transaction.requested_at || "");
+    let hour = 0;
+    let dayRinha = 0;
+    if (reqAt.length >= 19) {
+        hour = (reqAt.charCodeAt(11) - 48) * 10 + (reqAt.charCodeAt(12) - 48);
+        const year = parseInt(reqAt.substring(0, 4), 10);
+        const month = (reqAt.charCodeAt(5) - 48) * 10 + (reqAt.charCodeAt(6) - 48);
+        const day = (reqAt.charCodeAt(8) - 48) * 10 + (reqAt.charCodeAt(9) - 48);
+        dayRinha = getDayOfWeek(year, month, day);
+    }
     
-    // Dim 3: hour_of_day
-    vector[3] = Math.round((hour / 23) * 32767);
+    QUERY_VECTOR[3] = quantize(hour / 23);
+    QUERY_VECTOR[4] = quantize(dayRinha / 6);
 
-    // Dim 4: day_of_week (seg=0, dom=6)
-    // Usamos Date apenas para o dia da semana, que é complexo de calcular via string
-    const date = new Date(reqAt);
-    const dayUtc = date.getUTCDay(); // Dom=0, Seg=1...
-    const dayRinha = (dayUtc + 6) % 7; // Seg=0, Dom=6
-    vector[4] = Math.round((dayRinha / 6) * 32767);
-
-    // Dim 5 e 6: Histórico
-    if (last_transaction) {
-        const currentTs = date.getTime();
+    if (last_transaction && last_transaction.timestamp) {
+        const currentTs = new Date(reqAt).getTime();
         const lastTs = new Date(last_transaction.timestamp).getTime();
-        const diffMinutes = (currentTs - lastTs) / 60000;
-        
-        vector[5] = quantize(diffMinutes / config.max_minutes);
-        vector[6] = quantize(last_transaction.km_from_current / config.max_km);
+        QUERY_VECTOR[5] = quantize(((currentTs - lastTs) / 60000) / config.max_minutes);
+        QUERY_VECTOR[6] = quantize(Number(last_transaction.km_from_current) / config.max_km);
     } else {
-        vector[5] = SENTINEL;
-        vector[6] = SENTINEL;
+        QUERY_VECTOR[5] = SENTINEL;
+        QUERY_VECTOR[6] = SENTINEL;
     }
 
-    // Dim 7: km_from_home
-    vector[7] = quantize(terminal.km_from_home / config.max_km);
+    QUERY_VECTOR[7] = quantize(Number(terminal.km_from_home) / config.max_km);
+    QUERY_VECTOR[8] = quantize(Number(customer.tx_count_24h) / config.max_tx_count_24h);
+    QUERY_VECTOR[9] = terminal.is_online ? 32767 : 0;
+    QUERY_VECTOR[10] = terminal.card_present ? 32767 : 0;
 
-    // Dim 8: tx_count_24h
-    vector[8] = quantize(customer.tx_count_24h / config.max_tx_count_24h);
+    const mId = String(merchant.id || "");
+    const known = Array.isArray(customer.known_merchants) ? customer.known_merchants : [];
+    QUERY_VECTOR[11] = known.includes(mId) ? 0 : 32767;
 
-    // Dim 9: is_online
-    vector[9] = terminal.is_online ? 32767 : 0;
+    const risk = state.mccRisk.get(String(merchant.mcc)) ?? 0.5;
+    QUERY_VECTOR[12] = quantize(risk);
+    QUERY_VECTOR[13] = quantize(Number(merchant.avg_amount) / config.max_merchant_avg_amount);
 
-    // Dim 10: card_present
-    vector[10] = terminal.card_present ? 32767 : 0;
-
-    // Dim 11: unknown_merchant
-    // 1 se merchant.id não estiver em customer.known_merchants
-    const isKnown = customer.known_merchants.includes(merchant.id);
-    vector[11] = isKnown ? 0 : 32767;
-
-    // Dim 12: mcc_risk
-    const risk = state.mccRisk.get(merchant.mcc) ?? 0.5;
-    vector[12] = Math.round(risk * 32767);
-
-    // Dim 13: merchant_avg_amount
-    vector[13] = quantize(merchant.avg_amount / config.max_merchant_avg_amount);
-
-    return vector;
+    return QUERY_VECTOR;
 }

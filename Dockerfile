@@ -1,59 +1,63 @@
-# Estágio 1: Build
-FROM node:20-alpine AS builder
+# Stage 1: Builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Adiciona suporte a bibliotecas nativas e ferramentas de build
-RUN apk add --no-cache libc6-compat
+# Instalar dependências necessárias para o build
+RUN apk add --no-cache python3 make g++ zlib-dev
 
-# Copiar apenas os arquivos de dependências para aproveitar o cache
-COPY package.json package-lock.json* ./
+# Copiar arquivos de dependências
+COPY package.json package-lock.json ./
 
 # Instalar TODAS as dependências
 RUN npm ci
 
-# Copiar o código fonte, configurações e arquivos de dados
+# Copiar código e arquivos de dados
 COPY tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
 COPY resources ./resources
 
-# Executar o pré-processamento dos dados (gera dataset.bin)
+# Executar pré-processamento (gera os binários da VP-Tree)
+# Isso acontece uma única vez durante o build da imagem
 RUN npm run preprocess
 
 # Compilar TypeScript
 RUN npm run build
 
-# Remove dependências de desenvolvimento para economizar espaço e RAM
+# Limpar devDependencies
 RUN npm prune --production
 
-# Estágio 2: Runtime (Final)
-FROM node:20-alpine AS runner
+# Stage 2: Runner
+FROM node:22-alpine AS runner
 
-# Adiciona tini para lidar corretamente com sinais de processo
 RUN apk add --no-cache tini
 
 WORKDIR /app
 
-# Definir variável de ambiente para produção
+# Variável de ambiente de produção
 ENV NODE_ENV=production
 
-# Copiar apenas os arquivos necessários com a propriedade correta do usuário node
-COPY --from=builder --chown=node:node /app/dist ./dist
-COPY --from=builder --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder --chown=node:node /app/package.json ./package.json
-# Copiar os datasets binários gerados no build
-COPY --from=builder --chown=node:node /app/resources/vectors.bin ./resources/vectors.bin
-COPY --from=builder --chown=node:node /app/resources/labels.bin ./resources/labels.bin
+# Copiar arquivos compilados e dependências de produção
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 
-# Expor a porta exigida pela Rinha
-EXPOSE 9999
+# Copiar todos os recursos (binários gerados + arquivos JSON)
+COPY --from=builder /app/resources/vectors.bin ./resources/vectors.bin
+COPY --from=builder /app/resources/labels.bin ./resources/labels.bin
+COPY --from=builder /app/resources/tree.bin ./resources/tree.bin
+COPY --from=builder /app/resources/mcc_risk.json ./resources/mcc_risk.json
+COPY --from=builder /app/resources/normalization.json ./resources/normalization.json
 
-# Rodar como usuário não-root por segurança
+# Expor a porta interna da API
+EXPOSE 3000
+
+# Usar usuário node para segurança
 USER node
 
-# Inicia via tini para gestão correta de processos
+# Tini para gestão correta de sinais
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Comando para iniciar o servidor
-CMD ["node", "dist/index.js"]
+# Comando de inicialização com tuning do V8 para memória restrita
+CMD ["node", "--max-old-space-size=110", "--min-semi-space-size=2", "dist/index.js"]
