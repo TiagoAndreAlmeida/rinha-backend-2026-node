@@ -1,0 +1,23 @@
+{
+  "name": "nodejs-rinha-backend-2026",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "preprocess": "npx ts-node --esm scripts/preprocess.ts",
+    "start": "node dist/index.js",
+    "dev": "node --loader ts-node/esm src/index.ts",
+    "test:smoke": "k6 run test/smoke.js",
+    "test:load": "k6 run test/test.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/stream-json": "^1.7.8",
+    "stream-chain": "^3.6.2",
+    "stream-json": "^2.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
