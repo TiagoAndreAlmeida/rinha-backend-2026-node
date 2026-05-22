@@ -6,7 +6,6 @@ const DIMENSIONS = 14;
  * Calcula a distância euclidiana ao quadrado entre dois vetores Int16.
  */
 function squaredDistance(v1: Int16Array, v1Start: number, v2: Int16Array): number {
-    // Uso direto de índices para performance máxima e zero alocação de diffs
     const d0 = v1[v1Start + 0]! - v2[0]!;
     const d1 = v1[v1Start + 1]! - v2[1]!;
     const d2 = v1[v1Start + 2]! - v2[2]!;
@@ -24,9 +23,7 @@ function squaredDistance(v1: Int16Array, v1Start: number, v2: Int16Array): numbe
     return d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 + d4 * d4 + d5 * d5 + d6 * d6 + d7 * d7 + d8 * d8 + d9 * d9 + d10 * d10 + d11 * d11 + d12 * d12 + d13 * d13;
 }
 
-// MEMÓRIA REUTILIZÁVEL (Zero-Allocation Strategy)
-// Como o Node.js é single-threaded e processamos uma busca por vez, podemos usar globais.
-const GLOBAL_STACK = new Int32Array(128);
+const GLOBAL_STACK = new Int32Array(256);
 const BEST_DISTANCES = new Float64Array(5);
 const BEST_INDICES = new Int32Array(5);
 
@@ -42,7 +39,7 @@ export function findKNN(query: Int16Array, k: number = 5): number {
     const treeFloat = state.treeFloat64;
     const labels = state.labels;
 
-    // Inicializa estruturas globais
+    // Inicializa estruturas globais - BEST_DISTANCES[0] é sempre o MAIOR (raio de poda)
     BEST_DISTANCES.fill(Infinity);
     BEST_INDICES.fill(-1);
     let worstBestDistSq = Infinity;
@@ -62,7 +59,6 @@ export function findKNN(query: Int16Array, k: number = 5): number {
         const right = treeInt[baseInt + 5]!;
 
         if (vpIdx === -1) {
-            // NÓ FOLHA
             const leafStart = -(left + 1);
             const leafSize = -right;
             for (let i = 0; i < leafSize; i++) {
@@ -77,16 +73,13 @@ export function findKNN(query: Int16Array, k: number = 5): number {
             continue;
         }
 
-        // NÓ INTERNO
         const distToVpSq = squaredDistance(vectors, vpIdx * DIMENSIONS, query);
-
         if (distToVpSq < worstBestDistSq) {
             insertNeighbor(distToVpSq, vpIdx, k);
             worstBestDistSq = BEST_DISTANCES[0]!;
             worstBestDist = Math.sqrt(worstBestDistSq);
         }
 
-        // Poda e Decisão de Caminho
         const d = Math.sqrt(distToVpSq);
         const t = threshold;
         const r = worstBestDist;
@@ -100,30 +93,34 @@ export function findKNN(query: Int16Array, k: number = 5): number {
         }
     }
 
-    // Conta fraudes entre os K vizinhos
     let fraudCount = 0;
     for (let i = 0; i < k; i++) {
         const idx = BEST_INDICES[i]!;
-        if (idx !== -1) {
-            if (labels[idx >> 3]! & (1 << (idx & 7))) {
-                fraudCount++;
-            }
+        if (idx !== -1 && (labels[idx >> 3]! & (1 << (idx & 7)))) {
+            fraudCount++;
         }
     }
-
     return fraudCount;
 }
 
 /**
- * Insere um vizinho no top-K mantendo a ordenação.
+ * Insere mantendo os K menores, com o MAIOR deles no índice 0 (Max-Heap na posição 0).
  */
 function insertNeighbor(dist: number, idx: number, k: number) {
-    let i = 0;
-    while (i < k - 1 && dist < BEST_DISTANCES[i + 1]!) {
-        BEST_DISTANCES[i] = BEST_DISTANCES[i + 1]!;
-        BEST_INDICES[i] = BEST_INDICES[i + 1]!;
-        i++;
+    if (dist >= BEST_DISTANCES[0]!) return;
+    
+    BEST_DISTANCES[0] = dist;
+    BEST_INDICES[0] = idx;
+    
+    // Bubble down para manter o maior no topo (índice 0)
+    for (let i = 0; i < k - 1; i++) {
+        if (BEST_DISTANCES[i]! < BEST_DISTANCES[i+1]!) {
+            const tD = BEST_DISTANCES[i]!;
+            const tI = BEST_INDICES[i]!;
+            BEST_DISTANCES[i] = BEST_DISTANCES[i+1]!;
+            BEST_INDICES[i] = BEST_INDICES[i+1]!;
+            BEST_DISTANCES[i+1] = tD;
+            BEST_INDICES[i+1] = tI;
+        } else break;
     }
-    BEST_DISTANCES[i] = dist;
-    BEST_INDICES[i] = idx;
 }
