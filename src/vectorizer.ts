@@ -1,30 +1,27 @@
 import { state } from './state.js';
 
-const SENTINEL = -32768;
-const QUERY_VECTOR = new Int16Array(14); // Reutilizável
+const SENTINEL = 255;
+const QUERY_VECTOR = new Uint8Array(14); // Reutilizável
+
+const LOG_MAX_AMOUNT = Math.log1p(10000); // Baseado na constante de normalização
 
 /**
- * Quantização estrita. Retorna SENTINEL se o valor for inválido (NaN).
+ * Quantização UINT8 com Log-Scaling.
  */
-function quantize(value: number): number {
+function quantize(value: number, isLog: boolean = false): number {
     if (isNaN(value)) return SENTINEL; 
-    const clamped = Math.max(0, Math.min(1, value));
-    return Math.round(clamped * 32767);
+    let normalized = Math.max(0, Math.min(1, value));
+
+    if (isLog) {
+        // value aqui é a razão linear (valor / max). Voltamos ao valor real para aplicar log.
+        // Como o max é fixo em 10000 para as dimensões log, usamos a constante.
+        const actual = normalized * 10000;
+        normalized = Math.log1p(actual) / LOG_MAX_AMOUNT;
+    }
+
+    return Math.round(normalized * 254);
 }
 
-/**
- * Cálculo rápido do dia da semana (Seg=0, Dom=6) sem usar new Date().
- */
-function getDayOfWeek(y: number, m: number, d: number): number {
-    const t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    if (m < 3) y -= 1;
-    const day = (y + Math.floor(y/4) - Math.floor(y/100) + Math.floor(y/400) + t[m-1]! + d) % 7;
-    return (day + 6) % 7; 
-}
-
-/**
- * Extrai minutos totais de uma string ISO (2026-03-11T20:23:35Z) SEM criar objetos Date.
- */
 function getMinutesTotal(s: string): number {
     if (s.length < 16) return 0;
     const h = (s.charCodeAt(11) - 48) * 10 + (s.charCodeAt(12) - 48);
@@ -33,23 +30,22 @@ function getMinutesTotal(s: string): number {
     return d * 1440 + h * 60 + m;
 }
 
-/**
- * Transforma o payload em um Int16Array de 14 dimensões SEM ALOCAÇÃO.
- * Versão Final: Robusta contra nulos e otimizada para p99 < 1ms.
- */
-export function vectorize(payload: any): Int16Array {
-    const transaction = payload.transaction || {};
-    const customer = payload.customer || {};
-    const merchant = payload.merchant || {};
-    const terminal = payload.terminal || {};
-    const last_transaction = payload.last_transaction;
+function getDayOfWeek(y: number, m: number, d: number): number {
+    const t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    if (m < 3) y -= 1;
+    const day = (y + Math.floor(y/4) - Math.floor(y/100) + Math.floor(y/400) + t[m-1]! + d) % 7;
+    return (day + 6) % 7; 
+}
+
+export function vectorize(payload: any): Uint8Array {
+    const { transaction = {}, customer = {}, merchant = {}, terminal = {}, last_transaction } = payload;
     const config = state.config;
 
-    // Dim 0: amount
+    // Dim 0: amount (LOG)
     const amount = Number(transaction.amount);
-    QUERY_VECTOR[0] = quantize(amount / config.max_amount);
+    QUERY_VECTOR[0] = quantize(amount / config.max_amount, true);
 
-    // Dim 1: installments (Corrigido: precedência de Number)
+    // Dim 1: installments
     QUERY_VECTOR[1] = quantize(Number(transaction.installments || 0) / config.max_installments);
 
     // Dim 2: amount_vs_avg
@@ -57,7 +53,7 @@ export function vectorize(payload: any): Int16Array {
     const ratio = custAvg > 0 ? (amount / custAvg) : config.amount_vs_avg_ratio;
     QUERY_VECTOR[2] = quantize(ratio / config.amount_vs_avg_ratio);
 
-    // Parsing manual rápido da data: "2026-03-11T20:23:35Z"
+    // Dim 3 e 4: Data
     const reqAt = String(transaction.requested_at || "");
     let hour = 0;
     let dayRinha = 0;
@@ -84,8 +80,8 @@ export function vectorize(payload: any): Int16Array {
     // Dim 7 a 10: Terminal
     QUERY_VECTOR[7] = quantize(Number(terminal.km_from_home) / config.max_km);
     QUERY_VECTOR[8] = quantize(Number(customer.tx_count_24h) / config.max_tx_count_24h);
-    QUERY_VECTOR[9] = terminal.is_online ? 32767 : 0;
-    QUERY_VECTOR[10] = terminal.card_present ? 32767 : 0;
+    QUERY_VECTOR[9] = terminal.is_online ? 254 : 0; 
+    QUERY_VECTOR[10] = terminal.card_present ? 254 : 0;
 
     // Dim 11: unknown_merchant
     const mId = String(merchant.id || "");
@@ -94,12 +90,14 @@ export function vectorize(payload: any): Int16Array {
     for (let i = 0; i < known.length; i++) {
         if (known[i] === mId) { isKnown = true; break; }
     }
-    QUERY_VECTOR[11] = isKnown ? 0 : 32767;
+    QUERY_VECTOR[11] = isKnown ? 0 : 254;
 
-    // Dim 12 e 13: MCC e Merchant Avg
+    // Dim 12: mcc_risk
     const risk = state.mccRisk.get(String(merchant.mcc)) ?? 0.5;
     QUERY_VECTOR[12] = quantize(risk);
-    QUERY_VECTOR[13] = quantize(Number(merchant.avg_amount) / config.max_merchant_avg_amount);
+
+    // Dim 13: merchant_avg_amount (LOG)
+    QUERY_VECTOR[13] = quantize(Number(merchant.avg_amount) / config.max_merchant_avg_amount, true);
 
     return QUERY_VECTOR;
 }

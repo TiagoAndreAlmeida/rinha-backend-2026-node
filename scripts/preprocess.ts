@@ -11,18 +11,33 @@ const OUTPUT_LABELS = './resources/labels.bin';
 const OUTPUT_TREE = './resources/tree.bin';
 
 const DIMENSIONS = 14;
-const LEAF_SIZE = 64; // Reduzido para melhorar o backtracking em 14D
+const LEAF_SIZE = 128;
 
-function quantizeInt16(value: number | null | undefined): number {
-    if (value === -1 || value === null || value === undefined) return -32768;
-    const clamped = Math.max(0, Math.min(1, value));
-    return Math.round(clamped * 32767);
+const MAX_AMOUNT = 10000;
+const LOG_MAX_AMOUNT = Math.log1p(MAX_AMOUNT);
+
+/**
+ * Quantização UINT8 com Log-Scaling para Amount (Dim 0 e 13).
+ * Sentinel: 255, Dados: 0-254.
+ */
+function quantizeUint8(value: number | null | undefined, dim: number): number {
+    if (value === -1 || value === null || value === undefined) return 255;
+    
+    let normalized = Math.max(0, Math.min(1, value));
+
+    // Aplica Log-Scaling para dimensões financeiras (0 e 13)
+    if (dim === 0 || dim === 13) {
+        const actualAmount = normalized * MAX_AMOUNT;
+        normalized = Math.log1p(actualAmount) / LOG_MAX_AMOUNT;
+    }
+
+    return Math.round(normalized * 254);
 }
 
-function squaredDistance(v1: Int16Array, v2: Int16Array): number {
+function squaredDistance(v1: Uint8Array, v2: Uint8Array): number {
     let sum = 0;
     for (let i = 0; i < DIMENSIONS; i++) {
-        const diff = v1[i] - v2[i];
+        const diff = v1[i]! - v2[i]!;
         sum += diff * diff;
     }
     return sum;
@@ -50,10 +65,10 @@ function quickselect(indices: Int32Array, left: number, right: number, k: number
 }
 
 async function preprocess() {
-    console.log('🚀 Iniciando pré-processamento de ELITE...');
+    console.log('🚀 Iniciando pré-processamento UINT8 com Log-Scaling...');
 
     const totalRecords = 3000000;
-    const allVectors = new Int16Array(totalRecords * DIMENSIONS);
+    const allVectors = new Uint8Array(totalRecords * DIMENSIONS);
     const allLabelsTemp = new Uint8Array(totalRecords);
 
     console.log('⏳ Streaming JSON...');
@@ -67,7 +82,7 @@ async function preprocess() {
     let count = 0;
     for await (const { value } of pipeline) {
         for (let d = 0; d < DIMENSIONS; d++) {
-            allVectors[count * DIMENSIONS + d] = quantizeInt16(value.vector[d]);
+            allVectors[count * DIMENSIONS + d] = quantizeUint8(value.vector[d], d);
         }
         allLabelsTemp[count] = value.label === 'fraud' ? 1 : 0;
         count++;
@@ -79,12 +94,10 @@ async function preprocess() {
 
     const currentDistances = new Float64Array(count);
     const treeNodes: any[] = [];
-    
-    // Lista final de índices reordenados para garantir localidade de cache
     const finalIndices = new Int32Array(count);
     let finalIdxPtr = 0;
 
-    console.log('🌲 Construindo VP-Tree balanceada...');
+    console.log('🌲 Construindo VP-Tree...');
 
     const treeRoot = (function build(start: number, end: number): number {
         const size = end - start;
@@ -93,21 +106,17 @@ async function preprocess() {
 
         if (size <= LEAF_SIZE) {
             const leafStart = finalIdxPtr;
-            for (let i = start; i < end; i++) {
-                finalIndices[finalIdxPtr++] = indices[i];
-            }
-            // Folha: vantagePointIdx = -1, left = -(leafStart + 1), right = -size
+            for (let i = start; i < end; i++) finalIndices[finalIdxPtr++] = indices[i];
             treeNodes[nodeIdx] = { vantagePointIdx: -1, threshold: 0, left: -(leafStart + 1), right: -size };
             return nodeIdx;
         }
 
-        // Vantage Point é o primeiro. Ele NÃO vai para os filhos.
         const vpIdx = indices[start];
         finalIndices[finalIdxPtr++] = vpIdx;
-        const currentVpPos = finalIdxPtr - 1; // Posição dele no futuro array final
+        const currentVpPos = finalIdxPtr - 1;
 
         const vpVec = allVectors.subarray(vpIdx * DIMENSIONS, (vpIdx + 1) * DIMENSIONS);
-        const subStart = start + 1; // Pula o VP
+        const subStart = start + 1;
         const subSize = end - subStart;
 
         for (let i = 0; i < subSize; i++) {
@@ -117,22 +126,17 @@ async function preprocess() {
 
         const mid = subStart + Math.floor(subSize / 2);
         quickselect(indices, subStart, end - 1, mid, currentDistances);
-        const thresholdSq = currentDistances[indices[mid]];
-        const threshold = Math.sqrt(thresholdSq);
-
+        
+        const threshold = Math.sqrt(currentDistances[indices[mid]]);
         const left = build(subStart, mid);
         const right = build(mid, end);
 
-        // Nó interno: guardamos a posição futura do VP
         treeNodes[nodeIdx] = { vantagePointIdx: currentVpPos, threshold, left, right };
         return nodeIdx;
     })(0, count);
 
-    console.log(`✅ Árvore com ${treeNodes.length} nós.`);
-
-    // 2. Reordenação Física
-    console.log('🔄 Reordenando para localidade de cache...');
-    const reorderedVectors = new Int16Array(count * DIMENSIONS);
+    console.log('🔄 Serializando UINT8 Reordenado...');
+    const reorderedVectors = new Uint8Array(count * DIMENSIONS);
     const reorderedLabels = Buffer.alloc(Math.ceil(count / 8));
 
     for (let i = 0; i < count; i++) {
@@ -141,8 +145,6 @@ async function preprocess() {
         if (allLabelsTemp[oldIdx]) reorderedLabels[Math.floor(i / 8)] |= (1 << (i % 8));
     }
 
-    // 3. Serialização (24 bytes para alinhamento de 8 bytes do Float64)
-    console.log('💾 Salvando tree.bin (24-byte aligned)...');
     fs.writeFileSync(OUTPUT_VECTORS, Buffer.from(reorderedVectors.buffer));
     fs.writeFileSync(OUTPUT_LABELS, reorderedLabels);
 
@@ -151,14 +153,12 @@ async function preprocess() {
         const n = treeNodes[i];
         const offset = i * 24;
         treeBuffer.writeInt32LE(n.vantagePointIdx, offset);
-        // Pula 4 bytes para alinhar o Float64 em 8 bytes (offset + 8)
         treeBuffer.writeDoubleLE(n.threshold, offset + 8); 
         treeBuffer.writeInt32LE(n.left, offset + 16);
         treeBuffer.writeInt32LE(n.right, offset + 20);
     }
     fs.writeFileSync(OUTPUT_TREE, treeBuffer);
-
-    console.log('✨ Missão Cumprida! Dataset pronto para p99 < 1ms.');
+    console.log('✨ Missão UINT8 Cumprida!');
 }
 
 preprocess().catch(console.error);

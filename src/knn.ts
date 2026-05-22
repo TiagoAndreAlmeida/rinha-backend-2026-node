@@ -3,24 +3,26 @@ import { state } from './state.js';
 const DIMENSIONS = 14;
 
 /**
- * Calcula a distância euclidiana ao quadrado entre dois vetores Int16.
+ * Calcula a distância euclidiana ao quadrado entre vetor Uint8 (dataset) e Uint8 (query).
  */
-function squaredDistance(v1: Int16Array, v1Start: number, v2: Int16Array): number {
-    const d0 = v1[v1Start + 0]! - v2[0]!;
-    const d1 = v1[v1Start + 1]! - v2[1]!;
-    const d2 = v1[v1Start + 2]! - v2[2]!;
-    const d3 = v1[v1Start + 3]! - v2[3]!;
-    const d4 = v1[v1Start + 4]! - v2[4]!;
-    const d5 = v1[v1Start + 5]! - v2[5]!;
-    const d6 = v1[v1Start + 6]! - v2[6]!;
-    const d7 = v1[v1Start + 7]! - v2[7]!;
-    const d8 = v1[v1Start + 8]! - v2[8]!;
-    const d9 = v1[v1Start + 9]! - v2[9]!;
-    const d10 = v1[v1Start + 10]! - v2[10]!;
-    const d11 = v1[v1Start + 11]! - v2[11]!;
-    const d12 = v1[v1Start + 12]! - v2[12]!;
-    const d13 = v1[v1Start + 13]! - v2[13]!;
-    return d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 + d4 * d4 + d5 * d5 + d6 * d6 + d7 * d7 + d8 * d8 + d9 * d9 + d10 * d10 + d11 * d11 + d12 * d12 + d13 * d13;
+function squaredDistance(dataset: Uint8Array, start: number, query: Uint8Array): number {
+    let sum = 0;
+    // Loop desdobrado para máxima performance
+    let d = dataset[start + 0]! - query[0]!; sum += d * d;
+    d = dataset[start + 1]! - query[1]!; sum += d * d;
+    d = dataset[start + 2]! - query[2]!; sum += d * d;
+    d = dataset[start + 3]! - query[3]!; sum += d * d;
+    d = dataset[start + 4]! - query[4]!; sum += d * d;
+    d = dataset[start + 5]! - query[5]!; sum += d * d;
+    d = dataset[start + 6]! - query[6]!; sum += d * d;
+    d = dataset[start + 7]! - query[7]!; sum += d * d;
+    d = dataset[start + 8]! - query[8]!; sum += d * d;
+    d = dataset[start + 9]! - query[9]!; sum += d * d;
+    d = dataset[start + 10]! - query[10]!; sum += d * d;
+    d = dataset[start + 11]! - query[11]!; sum += d * d;
+    d = dataset[start + 12]! - query[12]!; sum += d * d;
+    d = dataset[start + 13]! - query[13]!; sum += d * d;
+    return sum;
 }
 
 const GLOBAL_STACK = new Int32Array(256);
@@ -28,10 +30,9 @@ const BEST_DISTANCES = new Float64Array(5);
 const BEST_INDICES = new Int32Array(5);
 
 /**
- * Encontra os K vizinhos mais próximos usando a VP-Tree.
- * Retorna o número de fraudes entre os K vizinhos.
+ * Encontra os K vizinhos mais próximos usando a VP-Tree (Uint8 Dataset).
  */
-export function findKNN(query: Int16Array, k: number = 5): number {
+export function findKNN(query: Uint8Array, k: number = 5): number {
     if (!state.vectors || !state.treeInt32 || !state.treeFloat64 || !state.labels) return 0;
 
     const vectors = state.vectors;
@@ -39,7 +40,6 @@ export function findKNN(query: Int16Array, k: number = 5): number {
     const treeFloat = state.treeFloat64;
     const labels = state.labels;
 
-    // Inicializa estruturas globais - BEST_DISTANCES[0] é sempre o MAIOR (raio de poda)
     BEST_DISTANCES.fill(Infinity);
     BEST_INDICES.fill(-1);
     let worstBestDistSq = Infinity;
@@ -103,16 +103,10 @@ export function findKNN(query: Int16Array, k: number = 5): number {
     return fraudCount;
 }
 
-/**
- * Insere mantendo os K menores, com o MAIOR deles no índice 0 (Max-Heap na posição 0).
- */
 function insertNeighbor(dist: number, idx: number, k: number) {
     if (dist >= BEST_DISTANCES[0]!) return;
-    
     BEST_DISTANCES[0] = dist;
     BEST_INDICES[0] = idx;
-    
-    // Bubble down para manter o maior no topo (índice 0)
     for (let i = 0; i < k - 1; i++) {
         if (BEST_DISTANCES[i]! < BEST_DISTANCES[i+1]!) {
             const tD = BEST_DISTANCES[i]!;

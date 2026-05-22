@@ -1,10 +1,10 @@
 /**
  * Estado global da aplicação.
- * Armazena os vetores quantizados, as labels e as constantes em memória.
+ * Armazena os vetores quantizados em Uint8 para maximizar a economia de RAM.
  */
 export const state = {
     isReady: false,
-    vectors: null as Int16Array | null,
+    vectors: null as Uint8Array | null,
     labels: null as Uint8Array | null,
     treeInt32: null as Int32Array | null,
     treeFloat64: null as Float64Array | null,
