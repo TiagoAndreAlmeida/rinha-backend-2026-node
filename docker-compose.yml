@@ -9,8 +9,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.06"
-          memory: "20MB"
+          cpus: "0.10"
+          memory: "30MB"
     depends_on:
       - api1
       - api2
@@ -26,8 +26,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.47"
-          memory: "165MB"
+          cpus: "0.45"
+          memory: "160MB"
     networks:
       - rinha-network
 
@@ -37,8 +37,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.47"
-          memory: "165MB"
+          cpus: "0.45"
+          memory: "160MB"
 
 networks:
   rinha-network:

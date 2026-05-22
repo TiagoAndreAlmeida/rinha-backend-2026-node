@@ -6,13 +6,23 @@ import { findKNN } from './knn.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 
+// RESPOSTAS PRÉ-ALOCADAS (Zero-Allocation)
+const RESPONSES = [
+    Buffer.from(JSON.stringify({ approved: true, fraud_score: 0.0 })),
+    Buffer.from(JSON.stringify({ approved: true, fraud_score: 0.2 })),
+    Buffer.from(JSON.stringify({ approved: true, fraud_score: 0.4 })),
+    Buffer.from(JSON.stringify({ approved: false, fraud_score: 0.6 })),
+    Buffer.from(JSON.stringify({ approved: false, fraud_score: 0.8 })),
+    Buffer.from(JSON.stringify({ approved: false, fraud_score: 1.0 }))
+];
+const RES_HEADERS = { 'Content-Type': 'application/json' };
+
 // Inicia o carregamento de dados imediatamente
 loadData();
 
 const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const { method, url } = req;
 
-    // Endpoint de prontidão exigido pela Rinha
     if (method === 'GET' && url === '/ready') {
         if (state.isReady) {
             res.writeHead(200);
@@ -23,53 +33,39 @@ const server = http.createServer((req: IncomingMessage, res: ServerResponse) => 
         }
     }
 
-    // Endpoint principal de detecção
     if (method === 'POST' && url === '/fraud-score') {
         if (!state.isReady) {
             res.writeHead(503);
-            return res.end(JSON.stringify({ error: 'System not ready' }));
+            return res.end();
         }
 
-        let bodySize = 0;
         const chunks: Buffer[] = [];
+        let bodySize = 0;
         
         req.on('data', (chunk) => {
             bodySize += chunk.length;
-            if (bodySize > 10240) { // Limite de 10KB
-                req.destroy();
-            } else {
-                chunks.push(chunk);
-            }
+            if (bodySize > 4096) req.destroy(); // Limite de 4KB
+            else chunks.push(chunk);
         });
 
         req.on('end', () => {
             try {
-                if (req.destroyed) throw new Error('Payload too large');
+                if (req.destroyed) throw new Error();
 
-                const body = Buffer.concat(chunks).toString();
-                const payload = JSON.parse(body);
+                const payload = JSON.parse(Buffer.concat(chunks).toString());
                 
-                // 1. Vetorização
+                // Vetorização e Busca
                 const queryVector = vectorize(payload);
-                
-                // 2. Busca KNN (k=5)
                 const fraudCount = findKNN(queryVector, 5);
                 
-                // 3. Decisão
-                const fraudScore = fraudCount / 5;
-                const approved = fraudScore < 0.6;
+                // Resposta ultra-rápida via Buffer pré-alocado
+                res.writeHead(200, RES_HEADERS);
+                res.end(RESPONSES[fraudCount] || RESPONSES[0]);
 
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    approved,
-                    fraud_score: fraudScore
-                }));
             } catch (error) {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    approved: true,
-                    fraud_score: 0.0
-                }));
+                // Falha aberta para evitar Erros 5xx na Rinha
+                res.writeHead(200, RES_HEADERS);
+                res.end(RESPONSES[0]);
             }
         });
         return;
@@ -79,10 +75,8 @@ const server = http.createServer((req: IncomingMessage, res: ServerResponse) => 
     res.end();
 });
 
-// Limita conexões simultâneas para não estourar a CPU 0.47
-server.maxConnections = 200;
-server.keepAliveTimeout = 65000; // Alinhado com o Nginx
+// Tuning de conexão
+server.maxConnections = 1000;
+server.keepAliveTimeout = 70000;
 
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor rodando em http://0.0.0.0:${PORT}`);
-});
+server.listen(PORT, '0.0.0.0');

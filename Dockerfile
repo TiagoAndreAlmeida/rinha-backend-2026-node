@@ -59,5 +59,5 @@ USER node
 # Tini para gestão correta de sinais
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Comando de inicialização com tuning do V8 para memória restrita
-CMD ["node", "--max-old-space-size=110", "--min-semi-space-size=2", "dist/index.js"]
+# Comando de inicialização com heap reduzido para sobrar RAM para o dataset (mmap/cache)
+CMD ["node", "--max-old-space-size=40", "--min-semi-space-size=2", "dist/index.js"]
